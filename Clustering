@@ -1,0 +1,85 @@
+import sys
+import requests
+import json
+from collections import defaultdict
+
+# For testing purposes, you can replace sys.argv[1] with the actual address directly.
+addr_set = set(['1BeouDc6jtHpitvPz3gR3LQnBGb7dKRrtC'])
+
+def signed_by_addr(tx, addr):
+    try:
+        tx_addrs = [x['addr'] for x in [y['prev_out'] for y in tx['inputs'] if 'prev_out' in y and 'addr' in y['prev_out']]]
+        return any([x in tx_addrs for x in addr])
+    except KeyError:
+        return False
+
+def cluster(addr):
+    url = 'https://blockchain.info/multiaddr?n=100&active=' + "|".join(addr)
+    response = requests.get(url)
+    address_clusters = defaultdict(set)
+    
+    try:
+        if response.status_code != 200:
+            print("Error: Non-200 response")
+            return {'none'}
+
+        data_parsed = response.json()
+
+        if 'txs' not in data_parsed:
+            print("No 'txs' in response")
+            return {'none'}
+
+        txs = data_parsed['txs']
+
+        for tx in txs:
+            input_addresses = set(
+                inp['prev_out']['addr']
+                for inp in tx['inputs']
+                if 'prev_out' in inp and 'addr' in inp['prev_out']
+            )
+            output_addresses = set(
+                out['addr']
+                for out in tx['out']
+                if 'addr' in out
+            )
+            
+            # Combine both heuristics
+            if signed_by_addr(tx, addr):
+                change_address = next(iter(output_addresses - input_addresses), None)
+                all_addresses = input_addresses.copy()
+                if change_address:
+                    all_addresses.add(change_address)
+                for address in all_addresses:
+                    address_clusters[address].update(all_addresses)
+
+    except json.decoder.JSONDecodeError:
+        print("JSON Decode Error")
+        return {'none'}
+
+    return address_clusters, len(txs)
+
+address_clusters, total_transactions = cluster(list(addr_set))
+
+def merge_clusters(clusters):
+    merged = []
+    for cluster in clusters:
+        for merged_cluster in merged:
+            if not cluster.isdisjoint(merged_cluster):
+                merged_cluster.update(cluster)
+                break
+        else:
+            merged.append(cluster)
+    return merged
+
+merged_clusters = merge_clusters(list(address_clusters.values()))
+
+# Collect all unique addresses
+unique_addresses = set()
+for cluster in merged_clusters:
+    unique_addresses.update(cluster)
+
+print("Total Transactions Processed:", total_transactions)
+print("Total Unique Addresses:", len(unique_addresses))
+print("Merged Address Clusters:")
+for idx, cluster in enumerate(merged_clusters, 1):
+    print(f"Cluster {idx}: {cluster}")
